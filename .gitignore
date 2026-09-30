@@ -1,0 +1,18 @@
+# environment + big downloads (recreated by setup.sh)
+.venv/
+llama.cpp/
+
+# model files (too big for git; GGUF/weights are rebuilt or re-downloaded)
+*.gguf
+*.safetensors
+*.bin
+
+# training outputs
+playground/runs/
+
+# your own data may be private -> keep out by default (template stays)
+playground/data/*
+!playground/data/template.jsonl
+
+__pycache__/
+*.pyc
