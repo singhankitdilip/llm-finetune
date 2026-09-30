@@ -13,9 +13,9 @@ Setup is done once; after that you only change your data and settings.
 git clone <your-repo-url> models && cd models
 bash setup.sh          # .venv + libraries (requirements.txt) + llama.cpp build
 ```
-The repo contains only code and docs. `.venv`, `llama.cpp`, `.gguf` files and `playground/runs/` are **not in git**
+The repo contains only code and docs. `.venv`, `llama.cpp`, `.gguf` files and `playground/*/runs/` are **not in git**
 (they are large); `setup.sh` recreates them. Base model weights download automatically from HuggingFace on the first
-train/chat run. Put your own data in `playground/data/` (it is git-ignored so it stays private; remove its line from
+train/chat run. Put your own data in `playground/<folder>/data/` (it is git-ignored so it stays private; remove its line from
 `.gitignore` if you want to push it).
 
 `setup.sh` needs: `git`, `cmake`, `g++`, and [`uv`](https://docs.astral.sh/uv/).
@@ -33,12 +33,12 @@ models/
 ├── requirements.txt          Pinned library versions
 ├── setup.sh                  One-time setup script
 └── playground/
-    ├── data/template.jsonl   Template showing the data format
-    ├── train.py              Training
-    ├── chat.py               Talk to the model (base or trained)
-    ├── export.py             Merge + GGUF + quantize in one command
-    ├── runs/                 One folder per training run (runs/<name>/)
-    └── README.md             Short quick reference
+    ├── README.md             Overview + results of the three recipes
+    ├── 1-normal/             Normal chat training (Orbit persona)
+    ├── 2-tools/              Tool-calling training
+    └── 3-normal-plus-tools/  Both skills in one model
+        (each folder holds: make_data.py, data/, train.py, chat.py, evaluate.py, export.py,
+         run.sh, runs/ = trained adapters, exports/ = .gguf files, README.md)
 ```
 
 **Machine:** RTX 3060 Ti (8 GB VRAM), Python 3.12 (via uv), Linux.
@@ -92,10 +92,11 @@ It is a **CPU-only** build (`llama-server` is not built; build it separately if 
 
 ## 4. Steps to train a new task
 
-Run every command from the `playground/` folder:
+Pick the folder for your recipe (section 11) and run every command from inside it. `bash run.sh <command>` in
+each folder shortens the commands below (see its README):
 ```bash
-cd ~/Desktop/llm-models/models/playground
-source ../.venv/bin/activate
+cd ~/Desktop/llm-models/models/playground/<folder>     # 1-normal | 2-tools | 3-normal-plus-tools
+source ../../.venv/bin/activate
 ```
 
 ### Step 1 - Make your data
@@ -150,17 +151,17 @@ Also ask **new questions** that were not in your data, not only ones from traini
 
 ### Step 5 - Make a GGUF
 ```bash
-python export.py --run v1                        # -> ../v1-Q4_K_M.gguf  (~150 MB)
+python export.py --run v1                        # -> exports/v1-Q4_K_M.gguf  (~150 MB)
 python export.py --run v1 --quant Q8_0           # bigger, closer to the original
 ```
 This does 3 things: merge -> convert (f16) -> quantize. It never overwrites the original `.gguf`.
 
 ### Step 6 - Run it in llama.cpp
 ```bash
-cd ~/Desktop/llm-models/models
-llama.cpp/build/bin/llama-cli -m v1-Q4_K_M.gguf                              # interactive chat
-llama.cpp/build/bin/llama-cli -m v1-Q4_K_M.gguf -p "a question" --single-turn   # one question
-llama.cpp/build/bin/llama-cli -m v1-Q4_K_M.gguf --temp 0 -n 100              # repeatable, max 100 tokens
+cd ~/Desktop/llm-models/models      # repo root
+llama.cpp/build/bin/llama-cli -m playground/<folder>/exports/v1-Q4_K_M.gguf                              # interactive chat
+llama.cpp/build/bin/llama-cli -m playground/<folder>/exports/v1-Q4_K_M.gguf -p "a question" --single-turn   # one question
+llama.cpp/build/bin/llama-cli -m playground/<folder>/exports/v1-Q4_K_M.gguf --temp 0 -n 100              # repeatable, max 100 tokens
 ```
 Quit with `Ctrl+C` or `/exit`.
 
@@ -237,8 +238,8 @@ Too new for PyTorch, so a separate Python 3.12 `.venv` is made with `uv`. Do not
 ## 8. Cleanup / housekeeping
 
 ```bash
-rm -rf playground/runs/<name>          # delete one run
-rm <name>-Q4_K_M.gguf                  # delete one exported GGUF
+rm -rf playground/<folder>/runs/<name>          # delete one run
+rm playground/<folder>/exports/<name>-Q4_K_M.gguf                  # delete one exported GGUF
 du -sh ~/.cache/huggingface ~/.cache/uv   # how big the caches are (base weights live in the HF cache; keep them)
 ```
 `runs/<name>/merged/` (~450 MB) stays after export. Delete it to save space; it can be rebuilt from the adapter.
@@ -248,6 +249,94 @@ du -sh ~/.cache/huggingface ~/.cache/uv   # how big the caches are (base weights
 ## 9. What next
 
 1. Pick a task (JSON extraction, classification, style/tone, rewrite/translation...).
-2. Make 100-500 varied examples -> `playground/data/`.
+2. Make 100-500 varied examples -> `playground/<folder>/data/`.
 3. Run steps 2-6 with `--name v1`, `v2`... to compare versions.
 4. Watch validation loss; if it overfits, lower `--epochs` or add more data.
+
+---
+
+## 10. Tool calling, and mixing it with normal training
+
+### What the model learns
+The model never runs a function. It learns to **output a structured call** and then to use the result:
+```
+user: "Weather in Paris?"
+model -> <|tool_call_start|>[get_weather(city='Paris')]<|tool_call_end|>
+your app runs get_weather -> "18C, cloudy"     (role "tool" message)
+model -> "It's 18C and cloudy in Paris."
+```
+Three skills: (1) decide *whether* to call a tool, (2) fill the right name and arguments, (3) use the result.
+The base model already does simple calls (we tested it), so training mainly makes it more reliable on YOUR tools.
+
+### Data format
+Same `.jsonl` as normal data, plus a `tools` list per example. See `playground/2-tools/data/template_tools.jsonl`.
+Include: normal calls, **no-tool** examples (greetings, general questions), **missing-argument** cases (model asks
+"Which city?"), and several tools where only one is right. Keep the toolset small (3-6 tools) for a 230M model.
+Aim for 300-1000 varied examples.
+
+### How `train.py` handles it (why it is built this way)
+- **Assistant-only loss.** Only tokens the assistant says (the tool call and the final reply) are trained. The tool
+  list, user text and tool results are masked (`-100`). Instruct models never predict those, and the tool schema alone
+  is ~100 tokens per example. Before masking, base loss was 8-10 (mostly prompt tokens); after, it is ~1.
+  Each run prints one sample with trained tokens inside `[[ ]]` so you can check it.
+- **Rendered in plain Python, not Arrow.** The `datasets` library merges all rows into one schema and would turn
+  `get_weather(city='Paris')` into `get_weather(city='Paris', expression=None)`. We avoid that.
+- **One BOS token** (the template and the tokenizer both add one; we keep only one).
+
+### Combining normal training and tool training (same model)
+| Approach | How | Verdict |
+|---|---|---|
+| **A. Mix in one run** | `python train.py --data data/chat.jsonl data/tools.jsonl --name combo` | **Recommended.** Both skills learned together, nothing forgotten. |
+| B. One after the other | Train chat, then train tools on top (`--base` = merged model path) | Risky: the second stage can make it forget the first (catastrophic forgetting). |
+| C. Separate adapters | One run per skill, load whichever you need | Clean, but `chat.py` loads one adapter at a time and export needs one merged model. |
+
+Mixing tips: keep roughly **60-70% normal + 30-40% tools**; keep the no-tool examples in the tools file so it does not
+call tools for everything; if one skill regresses, add more of its examples and retrain.
+
+### Testing tools
+```bash
+python chat.py --tools data/tools_example.json --ask "What's the weather in Paris?" "Hi there"      # base
+python chat.py --run combo --tools data/tools_example.json --ask "What's the weather in Paris?"      # trained
+```
+Check: right tool, right arguments, no call for small talk. Training data is rendered with Python-style quotes
+(`city='Paris'`) while the base model tends to print `city="Paris"`, so make your parser accept both.
+
+### Limits
+A 230M model handles single-tool calls with simple arguments well. Expect weakness on nested arguments, long tool
+lists and ambiguous requests. Score a held-out set automatically (right tool? right args? no call when none needed?)
+rather than judging by eye.
+
+---
+
+## 11. Recipes: one folder per training type
+
+`playground/` has three **self-contained** folders. Each has its own data, scripts, `runs/` (adapters), `exports/`
+(.gguf files), `run.sh` and README. Pick the one you need; the steps are identical.
+
+| Folder | Trains | Use when | `--data` used |
+|---|---|---|---|
+| `playground/1-normal/` | Normal chat (Orbit persona) | Pure chat/Q&A/style, no tools | `chat_orbit.jsonl` |
+| `playground/2-tools/` | Tool calling only | Your app calls functions; best tool accuracy | `tools_main.jsonl tools_nocall.jsonl:2` |
+| `playground/3-normal-plus-tools/` | Both in one model | Style AND tools together | `chat_orbit.jsonl:2 tools_main.jsonl tools_nocall.jsonl:2` |
+
+```bash
+cd ~/Desktop/llm-models/models/playground/2-tools      # or 1-normal / 3-normal-plus-tools
+bash run.sh data        # build data        bash run.sh train     # train -> runs/<name>/
+bash run.sh baseline    # untrained model   bash run.sh eval      # score base vs trained
+bash run.sh chat        # talk to it        bash run.sh export    # -> exports/<name>-Q4_K_M.gguf
+```
+
+`file.jsonl:N` means "use this file N times in the training part only" (validation never gets copies), to balance a
+mix. Results measured with `evaluate.py` on held-out prompts (tiny tests: treat as a trend, not a precise number):
+
+| Model | right tool (n=32) | exact args | no call when none needed (n=4) | Orbit persona (n=3) |
+|---|---|---|---|---|
+| base (untrained) | 38% | 38% | 100% | 0% |
+| `1-normal` | 28% | 28% | 100% | 67% |
+| `2-tools` | **97%** | **97%** | 100% | 0% |
+| `3-normal-plus-tools` | 91% | 91% | 100% | 67% |
+
+Normal-only training made tool calling **worse** than the base (38% -> 28%); tools-only gave the best tool score but
+no persona; the mixed run kept both. All three overfit at the default 10 epochs (validation loss was best at epoch 2-7),
+so try fewer epochs (`--epochs 4`) and compare with `bash run.sh eval`.
+The scripts are identical copies in each folder; if you improve one, copy the change to the others.

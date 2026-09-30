@@ -1,0 +1,2 @@
+{"messages": [{"role": "user", "content": "REPLACE: example input 1"}, {"role": "assistant", "content": "REPLACE: the ideal answer you want the model to give"}]}
+{"messages": [{"role": "system", "content": "OPTIONAL system message"}, {"role": "user", "content": "REPLACE: example input 2"}, {"role": "assistant", "content": "REPLACE: ideal answer 2"}]}

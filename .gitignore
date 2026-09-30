@@ -8,11 +8,12 @@ llama.cpp/
 *.bin
 
 # training outputs
-playground/runs/
+playground/*/runs/
 
 # your own data may be private -> keep out by default (template stays)
-playground/data/*
-!playground/data/template.jsonl
+playground/*/data/*
+!playground/*/data/template*.jsonl
+!playground/*/data/tools_example.json
 
 __pycache__/
 *.pyc

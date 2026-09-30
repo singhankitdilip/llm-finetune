@@ -13,9 +13,9 @@ kaise train karna hai. Ek baar setup ho gaya hai, ab sirf data aur settings bada
 git clone <tumhara-repo-url> models && cd models
 bash setup.sh          # .venv + libraries (requirements.txt) + llama.cpp build
 ```
-Repo mein sirf code aur guide hai. `.venv`, `llama.cpp`, `.gguf` files aur `playground/runs/` **git mein nahi** hain
+Repo mein sirf code aur guide hai. `.venv`, `llama.cpp`, `.gguf` files aur `playground/*/runs/` **git mein nahi** hain
 (badi hain), `setup.sh` unhe dobara bana deta hai. Base model weights pehli training par HuggingFace se apne aap
-download hote hain. Apna data `playground/data/` mein rakho (`.gitignore` ke kaaran private rehta hai; push karna
+download hote hain. Apna data `playground/<folder>/data/` mein rakho (`.gitignore` ke kaaran private rehta hai; push karna
 ho to `.gitignore` mein uski line hatao).
 
 ---
@@ -29,12 +29,12 @@ models/
 ├── llama.cpp/                GGUF convert/quantize/run karne ke tools (build ho chuke hain)
 ├── README.md / README.hinglish.md   Guide (English / Hinglish)
 └── playground/
-    ├── data/template.jsonl   Data ka format dekhne ke liye template
-    ├── train.py              Training
-    ├── chat.py               Model se baat (base ya trained)
-    ├── export.py             Merge + GGUF + quantize ek command mein
-    ├── runs/                 Har training ka alag folder (runs/<naam>/)
-    └── README.md             Chhota quick reference
+    ├── README.md             Overview + teeno recipes ke results
+    ├── 1-normal/             Normal chat training (Orbit persona)
+    ├── 2-tools/              Tool-calling training
+    └── 3-normal-plus-tools/  Dono skills ek model mein
+        (har folder mein: make_data.py, data/, train.py, chat.py, evaluate.py, export.py,
+         run.sh, runs/ = trained adapters, exports/ = .gguf files, README.md)
 ```
 
 **Machine:** RTX 3060 Ti (8 GB VRAM), Python 3.12 (uv se), Linux.
@@ -88,10 +88,11 @@ Ye **CPU-only** build hua hai (`llama-server` build nahi hua; chahiye to alag se
 
 ## 4. Naya task train karne ke steps
 
-Har command `playground/` folder se chalao:
+Apni recipe ka folder chuno (section 11) aur har command uske andar se chalao. Har folder ka
+`bash run.sh <command>` neeche ke commands chhote kar deta hai (uski README dekho):
 ```bash
-cd ~/Desktop/llm-models/models/playground
-source ../.venv/bin/activate
+cd ~/Desktop/llm-models/models/playground/<folder>     # 1-normal | 2-tools | 3-normal-plus-tools
+source ../../.venv/bin/activate
 ```
 
 ### Step 1 - Data banao
@@ -146,17 +147,17 @@ Test mein **naye sawal** (jo data mein nahi the) bhi poochho, sirf training wale
 
 ### Step 5 - GGUF banao
 ```bash
-python export.py --run v1                        # -> ../v1-Q4_K_M.gguf  (~150 MB)
+python export.py --run v1                        # -> exports/v1-Q4_K_M.gguf  (~150 MB)
 python export.py --run v1 --quant Q8_0           # bada, original ke kareeb
 ```
 Ye 3 kaam karta hai: merge -> convert (f16) -> quantize. Original `.gguf` kabhi overwrite nahi hoti.
 
 ### Step 6 - llama.cpp mein chalao
 ```bash
-cd ~/Desktop/llm-models/models
-llama.cpp/build/bin/llama-cli -m v1-Q4_K_M.gguf                              # interactive chat
-llama.cpp/build/bin/llama-cli -m v1-Q4_K_M.gguf -p "sawal" --single-turn     # ek sawal
-llama.cpp/build/bin/llama-cli -m v1-Q4_K_M.gguf --temp 0 -n 100              # repeatable, max 100 tokens
+cd ~/Desktop/llm-models/models      # repo root
+llama.cpp/build/bin/llama-cli -m playground/<folder>/exports/v1-Q4_K_M.gguf                              # interactive chat
+llama.cpp/build/bin/llama-cli -m playground/<folder>/exports/v1-Q4_K_M.gguf -p "sawal" --single-turn     # ek sawal
+llama.cpp/build/bin/llama-cli -m playground/<folder>/exports/v1-Q4_K_M.gguf --temp 0 -n 100              # repeatable, max 100 tokens
 ```
 Band karne ke liye `Ctrl+C` ya `/exit`.
 
@@ -233,8 +234,8 @@ PyTorch ke liye bahut naya. Isliye `uv` se alag Python 3.12 `.venv` banaya gaya 
 ## 8. Safai / housekeeping
 
 ```bash
-rm -rf playground/runs/<naam>          # ek run hatao
-rm <naam>-Q4_K_M.gguf                  # ek exported GGUF hatao
+rm -rf playground/<folder>/runs/<naam>          # ek run hatao
+rm playground/<folder>/exports/<naam>-Q4_K_M.gguf                  # ek exported GGUF hatao
 du -sh ~/.cache/huggingface ~/.cache/uv   # cache kitna bhara hai (base weights HF cache mein hain, mat hatao)
 ```
 `runs/<naam>/merged/` (~450 MB) export ke baad bhi rehta hai. Jagah chahiye to hata do, adapter se dobara ban jayega.
@@ -244,6 +245,95 @@ du -sh ~/.cache/huggingface ~/.cache/uv   # cache kitna bhara hai (base weights 
 ## 9. Agla kya
 
 1. Apna task chuno (JSON extraction, classification, style/tone, rewrite/translation...).
-2. 100-500 alag examples banao -> `playground/data/`.
+2. 100-500 alag examples banao -> `playground/<folder>/data/`.
 3. Steps 2-6 chalao, `--name v1`, `v2`... se versions compare karo.
 4. Validation loss dekho, overfitting ho to `--epochs` ghatao ya data badhao.
+
+---
+
+## 10. Tool calling, aur normal training ke saath mix karna
+
+### Model kya seekhta hai
+Model koi function chalata nahi. Woh ek **structured call likhna** seekhta hai, phir result ko use karna:
+```
+user: "Weather in Paris?"
+model -> <|tool_call_start|>[get_weather(city='Paris')]<|tool_call_end|>
+tumhari app get_weather chalati hai -> "18C, cloudy"     (role "tool" message)
+model -> "It's 18C and cloudy in Paris."
+```
+Teen skills: (1) tool call karna hai ya nahi, (2) sahi naam aur arguments bharna, (3) result ka use karna.
+Base model pehle se simple calls kar leta hai (hamne test kiya), isliye training se woh TUMHARE tools par zyada
+bharosemand hota hai.
+
+### Data format
+Normal `.jsonl` jaisa hi, bas har example mein `tools` list. `playground/2-tools/data/template_tools.jsonl` dekho.
+Shamil karo: normal calls, **bina tool wale** examples (hello, general sawal), **argument gayab** wale cases (model
+poochhe "Which city?"), aur kai tools jahan sirf ek sahi ho. Chhote model (230M) ke liye tools 3-6 hi rakho.
+300-1000 alag-alag examples ka target rakho.
+
+### `train.py` ye kaise karta hai (aur kyun)
+- **Assistant-only loss.** Sirf wahi tokens train hote hain jo assistant bolta hai (tool call aur final jawab).
+  Tool list, user ka text aur tool ka result mask hote hain (`-100`). Instruct model inhe kabhi predict nahi karta,
+  aur sirf tool schema har example mein ~100 tokens hai. Masking se pehle loss 8-10 tha (zyadatar prompt tokens),
+  baad mein ~1. Har run ek sample print karta hai jisme trained tokens `[[ ]]` mein hote hain, taaki tum check kar sako.
+- **Python mein render, Arrow mein nahi.** `datasets` library saari rows ko ek schema mein milati hai aur
+  `get_weather(city='Paris')` ko `get_weather(city='Paris', expression=None)` bana deti. Hum isse bachte hain.
+- **Ek hi BOS token** (template aur tokenizer dono ek-ek lagate hain; hum sirf ek rakhte hain).
+
+### Normal training aur tool training ek hi model par kaise milayein
+| Tareeka | Kaise | Nateeja |
+|---|---|---|
+| **A. Ek run mein mix** | `python train.py --data data/chat.jsonl data/tools.jsonl --name combo` | **Recommended.** Dono skills saath seekhta hai, kuch bhoolta nahi. |
+| B. Ek ke baad ek | Pehle chat train, phir uske upar tools (`--base` = merged model ka path) | Risky: doosra stage pehla bhula sakta hai (catastrophic forgetting). |
+| C. Alag adapters | Har skill ka alag run, jo chahiye woh load karo | Saaf hai, par `chat.py` ek baar mein ek adapter load karta hai aur export ke liye ek merged model chahiye. |
+
+Mix ke tips: lagbhag **60-70% normal + 30-40% tools** rakho; bina-tool wale examples tools file mein rakho, warna
+model har cheez par tool call karega; agar ek skill kharab ho jaye to uske zyada examples daalkar dobara train karo.
+
+### Tools test karna
+```bash
+python chat.py --tools data/tools_example.json --ask "What's the weather in Paris?" "Hi there"      # base
+python chat.py --run combo --tools data/tools_example.json --ask "What's the weather in Paris?"      # trained
+```
+Dekho: sahi tool, sahi arguments, small talk par call nahi. Training data Python-style quotes (`city='Paris'`) mein
+render hota hai jabki base model `city="Paris"` likhta hai, isliye apna parser dono quotes samjhe.
+
+### Limits
+230M model single-tool, simple arguments wali calls accha karta hai. Nested arguments, lambi tool list aur
+ambiguous requests par kamzor hoga. Held-out set ko automatically score karo (sahi tool? sahi args? bina zaroorat
+ke call nahi?), aankh se mat judge karo.
+
+---
+
+## 11. Recipes: har training type ka alag folder
+
+`playground/` mein teen **apne aap mein poore** folders hain. Har ek mein apna data, scripts, `runs/` (adapters),
+`exports/` (.gguf files), `run.sh` aur README hai. Jo chahiye wahi chuno; steps sab mein same hain.
+
+| Folder | Kya train karta hai | Kab use karein | `--data` |
+|---|---|---|---|
+| `playground/1-normal/` | Normal chat (Orbit persona) | Sirf chat/Q&A/style, tools nahi | `chat_orbit.jsonl` |
+| `playground/2-tools/` | Sirf tool calling | App functions call karti hai; behtar tool accuracy | `tools_main.jsonl tools_nocall.jsonl:2` |
+| `playground/3-normal-plus-tools/` | Dono ek model mein | Style BHI aur tools BHI | `chat_orbit.jsonl:2 tools_main.jsonl tools_nocall.jsonl:2` |
+
+```bash
+cd ~/Desktop/llm-models/models/playground/2-tools      # ya 1-normal / 3-normal-plus-tools
+bash run.sh data        # data banao        bash run.sh train     # train -> runs/<naam>/
+bash run.sh baseline    # bina train model  bash run.sh eval      # base vs trained score
+bash run.sh chat        # baat karo         bash run.sh export    # -> exports/<naam>-Q4_K_M.gguf
+```
+
+`file.jsonl:N` ka matlab hai "yeh file sirf training hisse mein N baar use karo" (validation mein copy nahi aati), taaki
+mix balance ho. `evaluate.py` se held-out prompts par nateeje (chhote tests: trend samjho, pakka number nahi):
+
+| Model | sahi tool (n=32) | exact args | bina zaroorat call nahi (n=4) | Orbit persona (n=3) |
+|---|---|---|---|---|
+| base (untrained) | 38% | 38% | 100% | 0% |
+| `1-normal` | 28% | 28% | 100% | 67% |
+| `2-tools` | **97%** | **97%** | 100% | 0% |
+| `3-normal-plus-tools` | 91% | 91% | 100% | 67% |
+
+Sirf normal training se tool calling base se **kharab** ho gayi (38% -> 28%); sirf tools se tool score sabse accha par
+persona nahi; mixed run mein dono bache. Teeno default 10 epochs par overfit hue (validation loss epoch 2-7 par best
+tha), isliye kam epochs (`--epochs 4`) try karo aur `bash run.sh eval` se compare karo.
+Scripts har folder mein same copy hain; ek mein sudhaar karo to baaki mein bhi copy karo.
